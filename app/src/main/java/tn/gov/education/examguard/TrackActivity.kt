@@ -23,7 +23,7 @@ class TrackActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
 
     // RSSI history for chart
-    private val rssiHistory = ArrayDeque<Int>(maxOf = 80)
+    private val rssiHistory = ArrayList<Int>(80)
     private var currentRssi = -100
 
     // UI
@@ -77,8 +77,8 @@ class TrackActivity : AppCompatActivity() {
 
     private fun updateRssi(rssi: Int) {
         currentRssi = rssi
-        rssiHistory.addLast(rssi)
-        if (rssiHistory.size > 80) rssiHistory.removeFirst()
+        rssiHistory.add(rssi)
+        if (rssiHistory.size > 80) rssiHistory.removeAt(0)
         runOnUiThread { refreshUI(rssi) }
     }
 

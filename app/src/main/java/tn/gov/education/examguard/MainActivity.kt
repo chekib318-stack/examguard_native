@@ -66,7 +66,7 @@ class MainActivity : AppCompatActivity() {
             addDevice(result.device.address, result.rssi, name, "BLE")
         }
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
-            results.forEach { onScanResult(ScanCallback.CALLBACK_TYPE_ALL_MATCHES, it) }
+            results.forEach { onScanResult(1, it) }
         }
         override fun onScanFailed(code: Int) {
             runOnUiThread { tvStatus.text = "BLE فشل (كود $code)" }
