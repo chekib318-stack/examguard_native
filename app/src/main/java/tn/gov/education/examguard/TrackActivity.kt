@@ -19,36 +19,94 @@ class TrackActivity : AppCompatActivity() {
 
     private var btAdapter: BluetoothAdapter? = null
     private var bleScanner: BluetoothLeScanner? = null
+    private var gatt: BluetoothGatt? = null
     private var isTracking = false
     private val handler = Handler(Looper.getMainLooper())
 
-    // RSSI history for chart
-    private val rssiHistory = ArrayList<Int>(80)
+    // RSSI data
+    private val rssiHistory = ArrayList<Int>(100)
     private var currentRssi = -100
+    private var kalmanRssi   = -100.0   // smoothed RSSI
 
     // UI
-    private lateinit var tvDevName  : TextView
-    private lateinit var tvDevMac   : TextView
-    private lateinit var tvRssi     : TextView
-    private lateinit var tvDist     : TextView
-    private lateinit var tvZone     : TextView
-    private lateinit var chartView  : RssiChartView
-    private lateinit var tvStatus   : TextView
-    private lateinit var btnStop    : Button
-    private lateinit var tvGuide    : TextView
-    private lateinit var pbSignal   : ProgressBar
+    private lateinit var tvDevName : TextView
+    private lateinit var tvDevMac  : TextView
+    private lateinit var tvRssi    : TextView
+    private lateinit var tvDist    : TextView
+    private lateinit var tvZone    : TextView
+    private lateinit var chartView : RssiChartView
+    private lateinit var tvStatus  : TextView
+    private lateinit var btnStop   : Button
+    private lateinit var tvGuide   : TextView
+    private lateinit var pbSignal  : ProgressBar
+    private lateinit var tvUpdated : TextView
 
     // Sound
-    private var toneGen: ToneGenerator? = null
-    private var beepRunnable: Runnable? = null
-    private var isMuted = false
-    private var lastBeepZone = ""
+    private var toneGen   : ToneGenerator? = null
+    private var beepRunnable: Runnable?    = null
+    private var isMuted   = false
+    private var lastZone  = ""
+    private var rssiReadCount = 0
+
+    // Kalman filter state
+    private var kalmanP = 1.0    // estimation error covariance
+    private val kalmanR = 3.0    // measurement noise
+    private val kalmanQ = 0.1    // process noise
 
     companion object {
-        const val SCAN_PERIOD = 3000L
+        // RSSI thresholds — calibrated for 1m apart phones
+        const val ZONE_CRITICAL = -45  // < 0.6m  FOUTEZ NOW
+        const val ZONE_DANGER   = -55  // ~ 1m
+        const val ZONE_WARNING  = -65  // ~ 2m
+        const val ZONE_WATCH    = -78  // ~ 5m
+
+        const val GATT_READ_INTERVAL_MS = 300L  // read RSSI every 300ms via GATT
+        const val SCAN_RESTART_MS       = 2000L  // restart BLE scan every 2s
     }
 
-    // ── Classic BT receiver ───────────────────────────────────────
+    // ── GATT callback — most accurate RSSI method ────────────────
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                runOnUiThread { tvStatus.text = "متصل عبر GATT — قراءة RSSI..." }
+                // Start continuous RSSI reading
+                scheduleGattRssiRead()
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                runOnUiThread { tvStatus.text = "انقطع الاتصال — إعادة الاتصال..." }
+                handler.postDelayed({ if (isTracking) reconnectGatt() }, 1000)
+            }
+        }
+
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS && isTracking) {
+                rssiReadCount++
+                processNewRssi(rssi)
+                // Schedule next read
+                handler.postDelayed({ if (isTracking) g.readRemoteRssi() },
+                    GATT_READ_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun scheduleGattRssiRead() {
+        handler.postDelayed({
+            if (isTracking) gatt?.readRemoteRssi()
+        }, 200)
+    }
+
+    // ── BLE scan callback (fallback if GATT fails) ───────────────
+    private val bleCb = object : ScanCallback() {
+        override fun onScanResult(type: Int, result: ScanResult) {
+            if (result.device.address == mac) {
+                processNewRssi(result.rssi)
+            }
+        }
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            results.find { it.device.address == mac }?.let { processNewRssi(it.rssi) }
+        }
+    }
+
+    // ── Classic BT receiver ──────────────────────────────────────
     private val classicReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             if (intent.action == BluetoothDevice.ACTION_FOUND) {
@@ -57,29 +115,30 @@ class TrackActivity : AppCompatActivity() {
                 else
                     @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                 val rssi = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE).toInt()
-                if (dev?.address == mac && rssi > -127) updateRssi(rssi)
+                if (dev?.address == mac && rssi > -127) processNewRssi(rssi)
             }
             if (intent.action == BluetoothAdapter.ACTION_DISCOVERY_FINISHED) {
-                handler.postDelayed({ if (isTracking) startClassicScan() }, 500)
+                // Restart classic scan immediately
+                handler.postDelayed({ if (isTracking) startClassicScan() }, 200)
             }
         }
     }
 
-    // ── BLE scan callback ─────────────────────────────────────────
-    private val bleCb = object : ScanCallback() {
-        override fun onScanResult(type: Int, result: ScanResult) {
-            if (result.device.address == mac) updateRssi(result.rssi)
-        }
-        override fun onBatchScanResults(results: MutableList<ScanResult>) {
-            results.find { it.device.address == mac }?.let { updateRssi(it.rssi) }
-        }
-    }
+    // ── Process new RSSI with Kalman filter ──────────────────────
+    private fun processNewRssi(raw: Int) {
+        // Kalman filter — smooths noisy RSSI readings
+        val innovation = raw - kalmanRssi
+        val kalmanGain = kalmanP / (kalmanP + kalmanR)
+        kalmanRssi = kalmanRssi + kalmanGain * innovation
+        kalmanP    = (1 - kalmanGain) * kalmanP + kalmanQ
 
-    private fun updateRssi(rssi: Int) {
-        currentRssi = rssi
-        rssiHistory.add(rssi)
-        if (rssiHistory.size > 80) rssiHistory.removeAt(0)
-        runOnUiThread { refreshUI(rssi) }
+        val smoothed = kalmanRssi.toInt()
+        currentRssi  = smoothed
+
+        rssiHistory.add(smoothed)
+        if (rssiHistory.size > 100) rssiHistory.removeAt(0)
+
+        runOnUiThread { refreshUI(smoothed, raw) }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -90,6 +149,9 @@ class TrackActivity : AppCompatActivity() {
         mac   = intent.getStringExtra("mac")   ?: ""
         name  = intent.getStringExtra("name")  ?: mac
         proto = intent.getStringExtra("proto") ?: "BLE"
+
+        // Init Kalman with default
+        kalmanRssi = -90.0
 
         setContentView(R.layout.activity_track)
 
@@ -103,16 +165,16 @@ class TrackActivity : AppCompatActivity() {
         btnStop   = findViewById(R.id.btnTrackStop)
         tvGuide   = findViewById(R.id.tvGuide)
         pbSignal  = findViewById(R.id.pbTrackSignal)
+        tvUpdated = findViewById(R.id.tvUpdated)
 
         tvDevName.text = name.ifBlank { mac }
         tvDevMac.text  = mac
 
-        try { toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 80) } catch (_: Exception) {}
+        try { toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 90) } catch (_: Exception) {}
 
         val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         btAdapter = btManager.adapter
 
-        // Register receivers
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
@@ -121,11 +183,9 @@ class TrackActivity : AppCompatActivity() {
 
         btnStop.setOnClickListener { finish() }
 
-        // Mute button
-        val btnMute = findViewById<Button>(R.id.btnMute)
-        btnMute.setOnClickListener {
+        findViewById<Button>(R.id.btnMute).setOnClickListener {
             isMuted = !isMuted
-            btnMute.text = if (isMuted) "🔇 كتم" else "🔊 صوت"
+            (it as Button).text = if (isMuted) "🔇 كتم" else "🔊 صوت"
             if (isMuted) stopBeep()
         }
 
@@ -134,12 +194,40 @@ class TrackActivity : AppCompatActivity() {
 
     private fun startTracking() {
         isTracking = true
-        tvStatus.text = "تتبع الجهاز: ${name.ifBlank { mac }}"
+        tvStatus.text = "بدء التتبع..."
 
-        // BLE
-        if (proto == "BLE" || proto == "BLE") startBleScan()
-        // Always try classic too
+        // Strategy 1: GATT connection (best for BLE — gives continuous RSSI)
+        connectGatt()
+
+        // Strategy 2: BLE passive scan (catches devices not accepting GATT)
+        startBleScan()
+
+        // Strategy 3: Classic BT discovery (for non-BLE devices)
         startClassicScan()
+    }
+
+    private fun connectGatt() {
+        try {
+            val device = btAdapter?.getRemoteDevice(mac) ?: return
+            gatt?.close()
+            gatt = if (Build.VERSION.SDK_INT >= 23) {
+                device.connectGatt(this, false, gattCallback,
+                    BluetoothDevice.TRANSPORT_LE)
+            } else {
+                device.connectGatt(this, false, gattCallback)
+            }
+            tvStatus.text = "جارٍ الاتصال بـ GATT..."
+        } catch (_: Exception) {
+            tvStatus.text = "GATT غير متاح — مسح BLE..."
+        }
+    }
+
+    private fun reconnectGatt() {
+        try {
+            gatt?.close()
+            gatt = null
+        } catch (_: Exception) {}
+        connectGatt()
     }
 
     private fun startBleScan() {
@@ -148,92 +236,116 @@ class TrackActivity : AppCompatActivity() {
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setReportDelay(0)
             .build()
-        // Filter by MAC address
-        val filters = listOf(
-            ScanFilter.Builder().setDeviceAddress(mac).build()
-        )
+        // Scan for THIS specific device
+        val filters = try {
+            listOf(ScanFilter.Builder().setDeviceAddress(mac).build())
+        } catch (_: Exception) { null }
+
         try {
             bleScanner?.startScan(filters, settings, bleCb)
         } catch (_: Exception) {
-            // Try without filter
             try { bleScanner?.startScan(null, settings, bleCb) } catch (_: Exception) {}
         }
-        // Restart periodically
-        handler.postDelayed({
-            if (isTracking) {
+
+        // Restart BLE scan every 2s to avoid Android throttling
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                if (!isTracking) return
                 try { bleScanner?.stopScan(bleCb) } catch (_: Exception) {}
-                handler.postDelayed({ if (isTracking) startBleScan() }, 200)
+                handler.postDelayed({
+                    if (isTracking) {
+                        try { bleScanner?.startScan(filters, settings, bleCb)
+                        } catch (_: Exception) {}
+                    }
+                }, 100)
+                handler.postDelayed(this, SCAN_RESTART_MS)
             }
-        }, SCAN_PERIOD)
+        }, SCAN_RESTART_MS)
     }
 
     private fun startClassicScan() {
         try {
             btAdapter?.cancelDiscovery()
             btAdapter?.startDiscovery()
-        } catch (_: SecurityException) {}
+        } catch (_: Exception) {}
     }
 
-    private fun refreshUI(rssi: Int) {
+    // ── Refresh UI ───────────────────────────────────────────────
+    private fun refreshUI(rssi: Int, rawRssi: Int) {
         val distM = 10.0.pow((-59.0 - rssi) / (10.0 * 2.7))
         val distStr = when {
-            distM < 1   -> "< 1 م"
+            distM < 0.5 -> "< 0.5 م"
+            distM < 1   -> "%.1f م".format(distM)
             distM < 10  -> "%.1f م".format(distM)
             else        -> "%.0f م".format(distM)
         }
-        val (zone, color, beepMs) = when {
-            rssi >= -45 -> Triple("🚨 فتش التلميذ الآن!", Color.parseColor("#CC0000"), 150)
-            rssi >= -55 -> Triple("🔴 جهاز قريب جداً!", Color.parseColor("#FF4400"), 300)
-            rssi >= -65 -> Triple("🟠 يقترب...",         Color.parseColor("#FF8800"), 700)
-            rssi >= -75 -> Triple("🟡 جهاز مرصود",        Color.parseColor("#FFBB00"), 1500)
-            else        -> Triple("🟢 بعيد",              Color.parseColor("#33AA55"), 0)
+
+        val (zone, color, zoneLabel, beepMs) = when {
+            rssi >= ZONE_CRITICAL -> Quad("critical", Color.parseColor("#AA0000"),
+                "🚨 فتش التلميذ الآن!", 120)
+            rssi >= ZONE_DANGER   -> Quad("danger",   Color.parseColor("#DD2200"),
+                "🔴 الجهاز قريب جداً!", 280)
+            rssi >= ZONE_WARNING  -> Quad("warning",  Color.parseColor("#FF7700"),
+                "🟠 يقترب...",          700)
+            rssi >= ZONE_WATCH    -> Quad("watch",    Color.parseColor("#FFBB00"),
+                "🟡 جهاز مرصود",        2000)
+            else                  -> Quad("clear",    Color.parseColor("#22AA55"),
+                "🟢 بعيد",              0)
         }
+
         val pct = ((rssi + 95.0) / 65.0 * 100).toInt().coerceIn(0, 100)
 
-        tvRssi.text = "$rssi dBm"
+        tvRssi.text  = "$rssi dBm"
         tvRssi.setTextColor(color)
-        tvDist.text = distStr
-        tvZone.text = zone
+        tvDist.text  = distStr
+        tvZone.text  = zoneLabel
         tvZone.setTextColor(color)
         pbSignal.progress = pct
         pbSignal.progressTintList = android.content.res.ColorStateList.valueOf(color)
-        chartView.setData(rssiHistory.toList())
+        tvUpdated.text = "#$rssiReadCount  raw:$rawRssi→smooth:$rssi"
 
-        // Guide text
-        tvGuide.text = when {
-            rssi >= -55 -> "← ابحث عن الجهاز في المنطقة المحيطة →"
-            rssi >= -65 -> "→ امش في هذا الاتجاه للاقتراب ←"
-            else        -> "ابدأ بالتحرك للعثور على الجهاز"
+        // Guide
+        tvGuide.text = when (zone) {
+            "critical" -> "← اتجه نحو التلميذ الأمامي →"
+            "danger"   -> "← الجهاز أمامك مباشرة →"
+            "warning"  -> "→ امشِ ببطء نحو الإشارة ←"
+            else       -> "تحرك ببطء وراقب قوة الإشارة"
         }
 
-        // Sound
-        if (beepMs > 0 && zone != lastBeepZone) {
-            lastBeepZone = zone
+        chartView.setData(rssiHistory.toList(), rssi)
+
+        // Sound + vibration
+        if (beepMs > 0 && zone != lastZone) {
+            lastZone = zone
             startBeep(beepMs)
         } else if (beepMs == 0) {
-            stopBeep()
-            lastBeepZone = ""
+            stopBeep(); lastZone = ""
         }
     }
 
-    // ── Beep logic ────────────────────────────────────────────────
+    data class Quad<A,B,C,D>(val a:A, val b:B, val c:C, val d:D)
+    private operator fun <A,B,C,D> Quad<A,B,C,D>.component1() = a
+    private operator fun <A,B,C,D> Quad<A,B,C,D>.component2() = b
+    private operator fun <A,B,C,D> Quad<A,B,C,D>.component3() = c
+    private operator fun <A,B,C,D> Quad<A,B,C,D>.component4() = d
+
+    // ── Sound ────────────────────────────────────────────────────
     private fun startBeep(intervalMs: Int) {
         stopBeep()
         if (isMuted) return
         beepRunnable = object : Runnable {
             override fun run() {
-                if (!isMuted) {
-                    try {
-                        toneGen?.startTone(
-                            when {
-                                intervalMs <= 200 -> ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK
-                                intervalMs <= 400 -> ToneGenerator.TONE_PROP_BEEP2
-                                else              -> ToneGenerator.TONE_PROP_BEEP
-                            }, (intervalMs * 0.6).toInt()
-                        )
-                    } catch (_: Exception) {}
-                    try { vibrate(intervalMs / 3) } catch (_: Exception) {}
-                }
+                if (isMuted) return
+                try {
+                    toneGen?.startTone(
+                        when {
+                            intervalMs <= 150 -> ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK
+                            intervalMs <= 300 -> ToneGenerator.TONE_PROP_BEEP2
+                            else              -> ToneGenerator.TONE_PROP_BEEP
+                        }, (intervalMs * 0.55).toInt()
+                    )
+                } catch (_: Exception) {}
+                vibrate(intervalMs / 4)
                 handler.postDelayed(this, intervalMs.toLong())
             }
         }
@@ -246,12 +358,14 @@ class TrackActivity : AppCompatActivity() {
     }
 
     private fun vibrate(ms: Int) {
-        val vib = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-        if (Build.VERSION.SDK_INT >= 26) {
-            vib.vibrate(VibrationEffect.createOneShot(ms.toLong(), VibrationEffect.DEFAULT_AMPLITUDE))
-        } else {
-            @Suppress("DEPRECATION") vib.vibrate(ms.toLong())
-        }
+        if (ms < 20) return
+        try {
+            val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            if (Build.VERSION.SDK_INT >= 26)
+                v.vibrate(VibrationEffect.createOneShot(ms.toLong(),
+                    VibrationEffect.DEFAULT_AMPLITUDE))
+            else @Suppress("DEPRECATION") v.vibrate(ms.toLong())
+        } catch (_: Exception) {}
     }
 
     override fun onDestroy() {
@@ -260,100 +374,87 @@ class TrackActivity : AppCompatActivity() {
         stopBeep()
         try { bleScanner?.stopScan(bleCb) } catch (_: Exception) {}
         try { btAdapter?.cancelDiscovery() } catch (_: Exception) {}
+        try { gatt?.disconnect(); gatt?.close(); gatt = null } catch (_: Exception) {}
         try { unregisterReceiver(classicReceiver) } catch (_: Exception) {}
         toneGen?.release()
         handler.removeCallbacksAndMessages(null)
     }
 }
 
-// ─── RSSI Chart Custom View ───────────────────────────────────────────────────
-class RssiChartView(context: android.content.Context, attrs: android.util.AttributeSet? = null)
-    : android.view.View(context, attrs) {
+// ─── RSSI Chart ───────────────────────────────────────────────────────────────
+class RssiChartView(ctx: android.content.Context, attrs: android.util.AttributeSet? = null)
+    : android.view.View(ctx, attrs) {
 
-    private var data = listOf<Int>()
+    private var data        = listOf<Int>()
+    private var currentRssi = -100
 
-    private val bgPaint   = Paint().apply { color = Color.parseColor("#1A1A2E"); isAntiAlias = true }
-    private val gridPaint = Paint().apply { color = Color.parseColor("#333355"); strokeWidth = 1f; isAntiAlias = true }
-    private val linePaint = Paint().apply {
-        color = Color.parseColor("#4488FF"); strokeWidth = 3f
-        isAntiAlias = true; style = Paint.Style.STROKE
+    private val bgPaint     = Paint().apply { color = Color.parseColor("#111122") }
+    private val gridPaint   = Paint().apply {
+        color = Color.parseColor("#222244"); strokeWidth = 0.8f }
+    private val textPaint   = Paint().apply {
+        color = Color.parseColor("#555577"); textSize = 26f; isAntiAlias = true }
+    private val currentPaint= Paint().apply {
+        color = Color.WHITE; strokeWidth = 1.5f; isAntiAlias = true
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(6f, 4f), 0f)
+    }
+    private val linePaint   = Paint().apply {
+        strokeWidth = 3f; isAntiAlias = true; style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
     }
-    private val fillPaint = Paint().apply {
-        color = Color.parseColor("#334488FF".replace("33", "22")); isAntiAlias = true
-        style = Paint.Style.FILL
-    }
-    private val textPaint = Paint().apply {
-        color = Color.parseColor("#888899"); textSize = 24f; isAntiAlias = true
-    }
-    private val currentPaint = Paint().apply {
-        color = Color.WHITE; strokeWidth = 2f; isAntiAlias = true
-        pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 4f), 0f)
-    }
+    private val fillPaint   = Paint().apply {
+        isAntiAlias = true; style = Paint.Style.FILL }
 
-    fun setData(newData: List<Int>) {
-        data = newData
-        invalidate()
+    fun setData(d: List<Int>, rssi: Int) {
+        data = d; currentRssi = rssi; invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val w = width.toFloat()
-        val h = height.toFloat()
-        val pad = 60f
-
-        // Background
+        val w = width.toFloat(); val h = height.toFloat(); val pad = 52f
         canvas.drawRect(0f, 0f, w, h, bgPaint)
 
-        // Grid lines at -20, -40, -60, -80, -100
-        val levels = listOf(-20, -40, -60, -80, -100)
-        levels.forEach { dBm ->
-            val y = pad + (dBm.toFloat() + 20f) / (-100f + 20f) * (h - 2 * pad)
-            canvas.drawLine(pad, y, w - pad, y, gridPaint)
-            canvas.drawText("$dBm", 2f, y + 8f, textPaint)
+        // Grid lines
+        listOf(-20, -40, -60, -80, -100).forEach { dBm ->
+            val y = rssiToY(dBm, pad, h)
+            canvas.drawLine(pad, y, w - 8f, y, gridPaint)
+            canvas.drawText("$dBm", 2f, y + 9f, textPaint)
         }
 
-        if (data.size < 2) {
-            canvas.drawText("جارٍ جمع البيانات...", w / 2 - 100, h / 2, textPaint)
-            return
-        }
+        if (data.size < 2) return
 
-        val stepX = (w - 2 * pad) / (data.size - 1)
-        fun rssiToY(rssi: Int) = pad + (rssi.toFloat() + 20f) / (-100f + 20f) * (h - 2 * pad)
+        val step = (w - pad - 8f) / (data.size - 1)
 
         // Fill area
-        val fillPath = Path()
-        fillPath.moveTo(pad, rssiToY(data.first()))
-        data.forEachIndexed { i, rssi ->
-            fillPath.lineTo(pad + i * stepX, rssiToY(rssi))
-        }
-        fillPath.lineTo(pad + (data.size - 1) * stepX, h - pad)
-        fillPath.lineTo(pad, h - pad)
-        fillPath.close()
-        // Color fill based on last RSSI
-        val lastRssi = data.last()
+        val fp = Path()
+        fp.moveTo(pad, rssiToY(data.first(), pad, h))
+        data.forEachIndexed { i, r -> fp.lineTo(pad + i * step, rssiToY(r, pad, h)) }
+        fp.lineTo(pad + (data.size - 1) * step, h - pad)
+        fp.lineTo(pad, h - pad)
+        fp.close()
         fillPaint.color = when {
-            lastRssi >= -45 -> Color.parseColor("#33CC0000")
-            lastRssi >= -55 -> Color.parseColor("#33FF4400")
-            lastRssi >= -65 -> Color.parseColor("#33FF8800")
-            else            -> Color.parseColor("#332244AA")
+            currentRssi >= -45 -> Color.parseColor("#33CC0000")
+            currentRssi >= -55 -> Color.parseColor("#33FF4400")
+            currentRssi >= -65 -> Color.parseColor("#33FF8800")
+            else               -> Color.parseColor("#222255AA")
         }
-        canvas.drawPath(fillPath, fillPaint)
+        canvas.drawPath(fp, fillPaint)
 
         // Line
         linePaint.color = when {
-            lastRssi >= -45 -> Color.parseColor("#FF4444")
-            lastRssi >= -55 -> Color.parseColor("#FF6600")
-            lastRssi >= -65 -> Color.parseColor("#FFAA00")
-            else            -> Color.parseColor("#4488FF")
+            currentRssi >= -45 -> Color.parseColor("#FF4444")
+            currentRssi >= -55 -> Color.parseColor("#FF6600")
+            currentRssi >= -65 -> Color.parseColor("#FFAA00")
+            else               -> Color.parseColor("#4488FF")
         }
-        val path = Path()
-        path.moveTo(pad, rssiToY(data.first()))
-        data.forEachIndexed { i, rssi -> path.lineTo(pad + i * stepX, rssiToY(rssi)) }
-        canvas.drawPath(path, linePaint)
+        val lp = Path()
+        lp.moveTo(pad, rssiToY(data.first(), pad, h))
+        data.forEachIndexed { i, r -> lp.lineTo(pad + i * step, rssiToY(r, pad, h)) }
+        canvas.drawPath(lp, linePaint)
 
-        // Current value dashed line
-        val curY = rssiToY(lastRssi)
-        canvas.drawLine(pad, curY, w - pad, curY, currentPaint)
+        // Current line
+        val cy = rssiToY(currentRssi, pad, h)
+        canvas.drawLine(pad, cy, w - 8f, cy, currentPaint)
     }
+
+    private fun rssiToY(rssi: Int, pad: Float, h: Float) =
+        pad + (rssi.toFloat() + 20f) / (-100f + 20f) * (h - 2 * pad)
 }
