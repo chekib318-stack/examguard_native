@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0A0A1A"
+    android:layoutDirection="rtl">
+
+    <!-- Header -->
+    <LinearLayout android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#111122"
+        android:padding="10dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+        <Button android:id="@+id/btnTrackStop"
+            android:layout_width="wrap_content" android:layout_height="34dp"
+            android:text="← رجوع" android:textColor="#FFF"
+            android:backgroundTint="#333" android:textSize="12sp"/>
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:orientation="vertical"
+            android:layout_marginHorizontal="10dp">
+            <TextView android:id="@+id/tvTrackName"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="Device" android:textColor="#FFF"
+                android:textSize="15sp" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvTrackMac"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="MAC" android:textColor="#555"
+                android:textSize="11sp" android:fontFamily="monospace"/>
+        </LinearLayout>
+        <Button android:id="@+id/btnMute"
+            android:layout_width="wrap_content" android:layout_height="34dp"
+            android:text="🔊 صوت" android:textColor="#FFF"
+            android:backgroundTint="#1A2A1A" android:textSize="11sp"/>
+    </LinearLayout>
+
+    <!-- Guide -->
+    <TextView android:id="@+id/tvGuide"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="تحرك ببطء وراقب الإشارة"
+        android:textColor="#D4AF37" android:textSize="15sp"
+        android:gravity="center" android:padding="10dp"
+        android:background="#1A1600"/>
+
+    <!-- RSSI BIG display -->
+    <LinearLayout android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="10dp">
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:orientation="vertical"
+            android:gravity="center" android:background="#161B22"
+            android:padding="10dp" android:layout_marginEnd="5dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="RSSI (مُرشَّح)" android:textColor="#555" android:textSize="11sp"/>
+            <TextView android:id="@+id/tvTrackRssi"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="-100 dBm" android:textColor="#4488FF"
+                android:textSize="30sp" android:textStyle="bold"/>
+        </LinearLayout>
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:orientation="vertical"
+            android:gravity="center" android:background="#161B22"
+            android:padding="10dp" android:layout_marginStart="5dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="المسافة التقريبية" android:textColor="#555" android:textSize="11sp"/>
+            <TextView android:id="@+id/tvTrackDist"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="— م" android:textColor="#FFF"
+                android:textSize="26sp" android:textStyle="bold"/>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Zone label -->
+    <TextView android:id="@+id/tvTrackZone"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="🟢 بعيد" android:textColor="#33AA55"
+        android:textSize="24sp" android:textStyle="bold"
+        android:gravity="center" android:padding="6dp"/>
+
+    <!-- Signal bar -->
+    <ProgressBar android:id="@+id/pbTrackSignal"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent" android:layout_height="14dp"
+        android:layout_marginHorizontal="12dp"
+        android:max="100" android:progress="0"
+        android:progressTint="#33AA55"
+        android:progressBackgroundTint="#222"/>
+
+    <!-- Chart label -->
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="مسار RSSI (الفلتر يُقلل الضوضاء)"
+        android:textColor="#555" android:textSize="11sp"
+        android:gravity="center" android:paddingTop="8dp"/>
+
+    <!-- RSSI Chart -->
+    <tn.gov.education.examguard.RssiChartView
+        android:id="@+id/chartView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_margin="6dp"/>
+
+    <!-- Debug info -->
+    <TextView android:id="@+id/tvUpdated"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="" android:textColor="#333" android:textSize="10sp"
+        android:gravity="center" android:paddingBottom="2dp"/>
+
+    <!-- Status -->
+    <TextView android:id="@+id/tvTrackStatus"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="جارٍ التتبع..." android:textColor="#444"
+        android:textSize="11sp" android:gravity="center"
+        android:paddingBottom="8dp"/>
+
+</LinearLayout>

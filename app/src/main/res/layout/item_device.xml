@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#161B22"
+    android:layout_marginBottom="6dp"
+    android:padding="12dp"
+    android:layoutDirection="rtl">
+
+    <!-- Row 1: Name + Protocol + Track button -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/tvDevName"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Device Name"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end"/>
+
+        <TextView
+            android:id="@+id/tvDevProto"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="BLE"
+            android:textColor="#4488FF"
+            android:textSize="11sp"
+            android:background="#111133"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="2dp"
+            android:layout_marginHorizontal="6dp"/>
+
+        <Button
+            android:id="@+id/btnTrack"
+            android:layout_width="wrap_content"
+            android:layout_height="30dp"
+            android:text="تتبع"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#1E7145"
+            android:textSize="11sp"
+            android:paddingHorizontal="12dp"/>
+    </LinearLayout>
+
+    <!-- Row 2: MAC -->
+    <TextView
+        android:id="@+id/tvDevMac"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="AA:BB:CC:DD:EE:FF"
+        android:textColor="#555"
+        android:textSize="11sp"
+        android:fontFamily="monospace"
+        android:layout_marginTop="3dp"/>
+
+    <!-- Row 3: RSSI + Distance + Zone -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="6dp">
+
+        <TextView
+            android:id="@+id/tvDevRssi"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="-75 dBm"
+            android:textColor="#FFBB00"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginEnd="10dp"/>
+
+        <TextView
+            android:id="@+id/tvDevDist"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="~5 م"
+            android:textColor="#888"
+            android:textSize="13sp"
+            android:layout_marginEnd="10dp"/>
+
+        <TextView
+            android:id="@+id/tvDevZone"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="🟢 بعيد"
+            android:textColor="#33AA55"
+            android:textSize="13sp"
+            android:gravity="end"/>
+    </LinearLayout>
+
+    <!-- Signal bar -->
+    <ProgressBar
+        android:id="@+id/pbSignal"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:layout_marginTop="6dp"
+        android:max="100"
+        android:progress="30"
+        android:progressTint="#33AA55"
+        android:progressBackgroundTint="#333"/>
+
+</LinearLayout>

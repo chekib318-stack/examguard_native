@@ -1,0 +1,20 @@
+workflows:
+  android-release:
+    name: Android Native Build
+    max_build_duration: 30
+    environment:
+      java: 17
+    scripts:
+      - name: Build APK
+        script: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+    artifacts:
+      - app/build/outputs/apk/**/*.apk
+    publishing:
+      email:
+        recipients:
+          - chekib318@gmail.com
+        notify:
+          success: true
+          failure: true
